@@ -594,10 +594,10 @@ uint8_t *wildbits_jr2_state::get_physical_block_ptr(uint8_t block_num)
 	// Blocks 0x00 - 0x3F (0x000000 - 0x07FFFF): Base System SRAM (512KB)
 	// Blocks 0x40 - 0x7F (0x080000 - 0x0FFFFF): Flash ROM (512KB) or SRAM if FLASHDIS=1
 	// Blocks 0x80 - 0x9F (0x100000 - 0x13FFFF): Cartridge Port (/c0, /c1, 256KB) or SRAM if FLASHDIS=1
-	// Blocks 0xA0 - 0xBF (0x140000 - 0x17FFFF): Window A Expansion SRAM (256KB)
+	// Blocks 0xA0 - 0xBF (0x140000 - 0x17FFFF): Window A Expansion SRAM (256KB) / first 256KB of the SRAM extension
 	// Blocks 0xC0 - 0xC4 (0x180000 - 0x189FFF): Dedicated Video and Audio Block buffers (40KB)
 	// Blocks 0xC5 - 0xCF: Unmapped (88KB)
-	// Blocks 0xD0 - 0xEF (0x1A0000 - 0x1DFFFF): Window B Expansion SRAM (256KB)
+	// Blocks 0xD0 - 0xEF (0x1A0000 - 0x1DFFFF): Window B Expansion SRAM (256KB) / second 256KB of the SRAM extension (VICKY mapping, 0x2000 per block)
 	// Blocks 0xF0 - 0xFF: Unmapped (128KB)
 	if (block_num < 0x40)
 	{
@@ -662,8 +662,8 @@ uint8_t *wildbits_jr2_state::vicky_ram_ptr(uint32_t address)
 		return &m_ram[address];
 	if (address >= 0x140000 && address < 0x180000)
 		return &m_ram[0x80000 + address - 0x140000];
-	if (address >= 0x200000 && address < 0x240000)
-		return &m_ram[0xc0000 + address - 0x200000];
+	if (address >= 0x1a0000 && address < 0x1e0000)   // rc15: window B at its identity address (rc14: 0x200000)
+		return &m_ram[0xc0000 + address - 0x1a0000];
 	return nullptr;
 }
 
