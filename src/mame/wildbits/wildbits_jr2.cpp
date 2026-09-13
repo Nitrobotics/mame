@@ -6,7 +6,7 @@
 
     The Wildbits Jr2 (formerly Foenix F256 Jr2) is an FPGA-based retro
     system powered by an Artix-7 FPGA running the FNX6809 soft core,
-    TinyVicky II graphics, 512KB SRAM, 512KB Flash ROM, and integrated
+    TinyVicky II graphics, 1MB SRAM, 512KB Flash ROM, and integrated
     peripherals. Aligned with hardware baseline wildbits_jr2_6809_v8_rc12.
 
 ****************************************************************************/
@@ -225,6 +225,7 @@ private:
 	void mmu_io_ctrl_w(uint8_t data);
 	uint8_t mmu_slot_r(offs_t offset);
 	void mmu_slot_w(offs_t offset, uint8_t data);
+	uint8_t *vicky_ram_ptr(uint32_t address);
 
 	// System Control handlers
 	uint8_t sys0_r();
@@ -359,7 +360,7 @@ private:
 	memory_bank_array_creator<8> m_bank_w;
 
 	// Memory structures
-	std::unique_ptr<uint8_t[]> m_ram;        // 2MB Physical SRAM (1,792 KB decoded)
+std::unique_ptr<uint8_t[]> m_ram;        // 2MB Physical SRAM (1,792 KB decoded)
 	std::unique_ptr<uint8_t[]> m_cart;       // 256KB Cartridge port decode ($80 - $9F)
 	std::unique_ptr<uint8_t[]> m_unmapped;   // 8KB dummy unmapped page
 	std::unique_ptr<uint8_t[]> m_vram_c0;     // Block $C0: VICKY control & gamma
@@ -408,6 +409,7 @@ private:
 	uint8_t m_t1_ctr;
 	uint8_t m_t1_stat;
 	uint32_t m_t1_val;
+	uint32_t m_t1_load;    // TIMER1 load registers (bits 23:0), copied into the counter by control bit 2
 	uint32_t m_t1_cmp;
 	uint8_t m_t1_cmp_ctr;
 
@@ -555,6 +557,7 @@ private:
 	uint16_t m_vky_crsr_x;
 	uint16_t m_vky_crsr_y;
 	uint16_t m_vky_line_cmp;
+uint8_t m_vky_gfx_mode;     // GFX MODE $FFCB (rc14): bit 0 = HIRES4 for every bitmap plane, bits 3:1 = palette GROUP
 	uint8_t m_vky_lint_ctrl;
 	emu_timer *m_scanline_timer;
 
@@ -618,6 +621,10 @@ uint8_t *wildbits_jr2_state::get_physical_block_ptr(uint8_t block_num)
 	{
 		return &m_ram[block_num * 0x2000];
 	}
+	else if (block_num >= 0xa0 && block_num < 0xc0)
+	{
+		return &m_ram[0x80000 + (block_num - 0xa0) * 0x2000];
+	}
 	else if (block_num == 0xc0)
 	{
 		return m_vram_c0.get();
@@ -640,12 +647,24 @@ uint8_t *wildbits_jr2_state::get_physical_block_ptr(uint8_t block_num)
 	}
 	else if (block_num >= 0xd0 && block_num < 0xf0)
 	{
-		return &m_ram[block_num * 0x2000];
+return &m_ram[block_num * 0x2000];
 	}
 	else
 	{
 		return m_unmapped.get();
 	}
+}
+
+uint8_t *wildbits_jr2_state::vicky_ram_ptr(uint32_t address)
+{
+	// Revision E bus-visible aliases into the single 1MB SRAM backing store.
+	if (address < 0x080000)
+		return &m_ram[address];
+	if (address >= 0x140000 && address < 0x180000)
+		return &m_ram[0x80000 + address - 0x140000];
+	if (address >= 0x200000 && address < 0x240000)
+		return &m_ram[0xc0000 + address - 0x200000];
+	return nullptr;
 }
 
 void wildbits_jr2_state::update_banks()
@@ -1130,25 +1149,25 @@ uint8_t wildbits_jr2_state::timer_r(offs_t offset)
 		m_t0_stat = 0; // Read clears status
 		return stat;
 	}
-	case 0x01: return t0_current & 0xff;
+	case 0x01: return (t0_current >> 16) & 0xff;   // bits 23:16 first, as the timer block answers
 	case 0x02: return (t0_current >> 8) & 0xff;
-	case 0x03: return (t0_current >> 16) & 0xff;
+	case 0x03: return t0_current & 0xff;
 	case 0x04: return m_t0_cmp_ctr;
-	case 0x05: return m_t0_cmp & 0xff;
+	case 0x05: return (m_t0_cmp >> 16) & 0xff;
 	case 0x06: return (m_t0_cmp >> 8) & 0xff;
-	case 0x07: return (m_t0_cmp >> 16) & 0xff;
+	case 0x07: return m_t0_cmp & 0xff;
 	case 0x08: {
 		uint8_t stat = m_t1_stat;
 		m_t1_stat = 0;
 		return stat;
 	}
-	case 0x09: return m_t1_val & 0xff;
+	case 0x09: return (m_t1_val >> 16) & 0xff;   // TIMER1 count, bits 23:16 (the RTL answers high byte first)
 	case 0x0a: return (m_t1_val >> 8) & 0xff;
-	case 0x0b: return (m_t1_val >> 16) & 0xff;
+	case 0x0b: return m_t1_val & 0xff;
 	case 0x0c: return m_t1_cmp_ctr;
-	case 0x0d: return m_t1_cmp & 0xff;
+	case 0x0d: return (m_t1_cmp >> 16) & 0xff;
 	case 0x0e: return (m_t1_cmp >> 8) & 0xff;
-	case 0x0f: return (m_t1_cmp >> 16) & 0xff;
+	case 0x0f: return m_t1_cmp & 0xff;
 	default: return 0;
 	}
 }
@@ -1175,32 +1194,24 @@ void wildbits_jr2_state::timer_w(offs_t offset, uint8_t data)
 			m_timer0->adjust(attotime::never);
 		}
 		break;
-	case 0x01: m_t0_val = (m_t0_val & 0xffff00) | data; break;
+	case 0x01: m_t0_val = (m_t0_val & 0x00ffff) | (data << 16); break;
 	case 0x02: m_t0_val = (m_t0_val & 0xff00ff) | (data << 8); break;
-	case 0x03: m_t0_val = (m_t0_val & 0x00ffff) | (data << 16); break;
+	case 0x03: m_t0_val = (m_t0_val & 0xffff00) | data; break;
 	case 0x04: m_t0_cmp_ctr = data; break;
-	case 0x05: m_t0_cmp = (m_t0_cmp & 0xffff00) | data; break;
+	case 0x05: m_t0_cmp = (m_t0_cmp & 0x00ffff) | (data << 16); break;
 	case 0x06: m_t0_cmp = (m_t0_cmp & 0xff00ff) | (data << 8); break;
-	case 0x07: m_t0_cmp = (m_t0_cmp & 0x00ffff) | (data << 16); break;
-	case 0x08: // T1_CTR
+	case 0x07: m_t0_cmp = (m_t0_cmp & 0xffff00) | data; break;
+	case 0x08: // T1_CTR: bit 0 count enable (one step per start of frame), bit 1 clear, bit 2 load, bit 3 up/down
 		m_t1_ctr = data;
-		if (data & 0x01)
-		{
-			if (m_t1_cmp > 0)
-				m_timer1->adjust(attotime::from_hz(60) * m_t1_cmp);
-		}
-		else
-		{
-			m_timer1->adjust(attotime::never);
-		}
+		m_timer1->adjust(attotime::never);   // the count itself runs in vblank_w, like the RTL
 		break;
-	case 0x09: m_t1_val = (m_t1_val & 0xffff00) | data; break;
-	case 0x0a: m_t1_val = (m_t1_val & 0xff00ff) | (data << 8); break;
-	case 0x0b: m_t1_val = (m_t1_val & 0x00ffff) | (data << 16); break;
+	case 0x09: m_t1_load = (m_t1_load & 0x00ffff) | (data << 16); break;   // load value, bits 23:16 first
+	case 0x0a: m_t1_load = (m_t1_load & 0xff00ff) | (data << 8); break;
+	case 0x0b: m_t1_load = (m_t1_load & 0xffff00) | data; break;
 	case 0x0c: m_t1_cmp_ctr = data; break;
-	case 0x0d: m_t1_cmp = (m_t1_cmp & 0xffff00) | data; break;
+	case 0x0d: m_t1_cmp = (m_t1_cmp & 0x00ffff) | (data << 16); break;
 	case 0x0e: m_t1_cmp = (m_t1_cmp & 0xff00ff) | (data << 8); break;
-	case 0x0f: m_t1_cmp = (m_t1_cmp & 0x00ffff) | (data << 16); break;
+	case 0x0f: m_t1_cmp = (m_t1_cmp & 0xffff00) | data; break;
 	}
 }
 
@@ -2357,7 +2368,9 @@ void wildbits_jr2_state::fpu_w(offs_t offset, uint8_t data)
 // FPGA Block RAM (VICKY control, CLUTs, text/color matrices: $C0-$C4).
 uint8_t wildbits_jr2_state::dma_read_byte(uint32_t phys_addr)
 {
-	phys_addr &= 0x1fffff;
+	phys_addr &= 0x3fffff;
+	if (uint8_t *ram = vicky_ram_ptr(phys_addr))
+		return *ram;
 	uint8_t block = (phys_addr >> 13) & 0xff;
 	uint16_t offset = phys_addr & 0x1fff;
 	if (block < 0x40)
@@ -2385,10 +2398,15 @@ uint8_t wildbits_jr2_state::dma_read_byte(uint32_t phys_addr)
 
 void wildbits_jr2_state::dma_write_byte(uint32_t phys_addr, uint8_t data)
 {
-	phys_addr &= 0x1fffff;
+	phys_addr &= 0x3fffff;
+	if (uint8_t *ram = vicky_ram_ptr(phys_addr))
+	{
+		*ram = data;
+		return;
+	}
 	uint8_t block = (phys_addr >> 13) & 0xff;
 	uint16_t offset = phys_addr & 0x1fff;
-	if (block < 0x40)
+if (block < 0x40)
 	{
 		m_ram[block * 0x2000 + offset] = data;
 	}
@@ -2490,17 +2508,17 @@ void wildbits_jr2_state::dma_execute()
 			{
 				for (uint32_t i = 0; i < count; i++)
 				{
-					uint32_t d_addr = (dst + i) & 0x1fffff;
-					uint8_t fb = is_16bit_fill ? ((i & 1) ? m_dma_reg[3] : m_dma_reg[2]) : fill_byte;
-					if (has_logic_op)
-					{
-						uint8_t d_val = dma_read_byte(d_addr);
-						dma_write_byte(d_addr, apply_op(fb, d_val));
-					}
-					else
-					{
-						dma_write_byte(d_addr, fb);
-					}
+uint32_t d_addr = (dst + i) & 0x1fffff;
+				uint8_t fb = is_16bit_fill ? ((i & 1) ? m_dma_reg[3] : m_dma_reg[2]) : fill_byte;
+				if (has_logic_op)
+				{
+					uint8_t d_val = dma_read_byte(d_addr);
+					dma_write_byte(d_addr, apply_op(fb, d_val));
+				}
+				else
+				{
+					dma_write_byte(d_addr, fb);
+				}
 				}
 				cycles = has_logic_op ? (count / 6) : (count / 16);
 			}
@@ -2508,18 +2526,18 @@ void wildbits_jr2_state::dma_execute()
 			{
 				for (uint32_t i = 0; i < count; i++)
 				{
-					uint32_t s_addr = (src + i) & 0x1fffff;
-					uint32_t d_addr = (dst + i) & 0x1fffff;
-					uint8_t s_val = dma_read_byte(s_addr);
-					if (has_logic_op)
-					{
-						uint8_t d_val = dma_read_byte(d_addr);
-						dma_write_byte(d_addr, apply_op(s_val, d_val));
-					}
-					else
-					{
-						dma_write_byte(d_addr, s_val);
-					}
+uint32_t s_addr = (src + i) & 0x1fffff;
+				uint32_t d_addr = (dst + i) & 0x1fffff;
+				uint8_t s_val = dma_read_byte(s_addr);
+				if (has_logic_op)
+				{
+					uint8_t d_val = dma_read_byte(d_addr);
+					dma_write_byte(d_addr, apply_op(s_val, d_val));
+				}
+				else
+				{
+					dma_write_byte(d_addr, s_val);
+				}
 				}
 				cycles = has_logic_op ? (count / 2) : (count / 5);
 			}
@@ -2535,42 +2553,42 @@ void wildbits_jr2_state::dma_execute()
 
 		for (uint16_t y = 0; y < height; y++)
 		{
-			uint32_t row_src = (src + (uint32_t)y * src_stride) & 0x1fffff;
-			uint32_t row_dst = (dst + (uint32_t)y * dst_stride) & 0x1fffff;
+			uint32_t row_src = (src + (uint32_t)y * src_stride) & 0x3fffff;
+			uint32_t row_dst = (dst + (uint32_t)y * dst_stride) & 0x3fffff;
 
 			if (is_fill)
 			{
 				for (uint16_t x = 0; x < width; x++)
 				{
-					uint32_t d_addr = (row_dst + x) & 0x1fffff;
-					uint8_t fb = is_16bit_fill ? ((x & 1) ? m_dma_reg[3] : m_dma_reg[2]) : fill_byte;
-					if (has_logic_op)
-					{
-						uint8_t d_val = dma_read_byte(d_addr);
-						dma_write_byte(d_addr, apply_op(fb, d_val));
-					}
-					else
-					{
-						dma_write_byte(d_addr, fb);
-					}
+uint32_t d_addr = (row_dst + x) & 0x1fffff;
+				uint8_t fb = is_16bit_fill ? ((x & 1) ? m_dma_reg[3] : m_dma_reg[2]) : fill_byte;
+				if (has_logic_op)
+				{
+					uint8_t d_val = dma_read_byte(d_addr);
+					dma_write_byte(d_addr, apply_op(fb, d_val));
+				}
+				else
+				{
+					dma_write_byte(d_addr, fb);
+				}
 				}
 			}
 			else
 			{
 				for (uint16_t x = 0; x < width; x++)
 				{
-					uint32_t s_addr = (row_src + x) & 0x1fffff;
-					uint32_t d_addr = (row_dst + x) & 0x1fffff;
-					uint8_t s_val = dma_read_byte(s_addr);
-					if (has_logic_op)
-					{
-						uint8_t d_val = dma_read_byte(d_addr);
-						dma_write_byte(d_addr, apply_op(s_val, d_val));
-					}
-					else
-					{
-						dma_write_byte(d_addr, s_val);
-					}
+uint32_t s_addr = (row_src + x) & 0x1fffff;
+				uint32_t d_addr = (row_dst + x) & 0x1fffff;
+				uint8_t s_val = dma_read_byte(s_addr);
+				if (has_logic_op)
+				{
+					uint8_t d_val = dma_read_byte(d_addr);
+					dma_write_byte(d_addr, apply_op(s_val, d_val));
+				}
+				else
+				{
+					dma_write_byte(d_addr, s_val);
+				}
 				}
 			}
 		}
@@ -2668,8 +2686,8 @@ uint8_t wildbits_jr2_state::vky_r(offs_t offset)
 	case 0x07: return m_vky_brdr_r;
 	case 0x08: return m_vky_brdr_w;
 	case 0x09: return m_vky_brdr_h;
-	case 0x0a: return m_vky_drawline_ctrl;
-	case 0x0b: return m_vky_gfx_mode;
+case 0x0a: return m_vky_drawline_ctrl;
+	case 0x0b: return m_vky_gfx_mode;        // GFX MODE ($FFCB) reads back what was written
 	case 0x0d: return m_vky_bg_b;
 	case 0x0e: return m_vky_bg_g;
 	case 0x0f: return m_vky_bg_r;
@@ -2716,8 +2734,8 @@ void wildbits_jr2_state::vky_w(offs_t offset, uint8_t data)
 	case 0x07: m_vky_brdr_r = data; break;
 	case 0x08: m_vky_brdr_w = data & 0x1f; break;
 	case 0x09: m_vky_brdr_h = data & 0x1f; break;
-	case 0x0a: m_vky_drawline_ctrl = data; break;
-	case 0x0b: m_vky_gfx_mode = data & 0x0f; break; // HIRES4 mode & CLUT group
+case 0x0a: m_vky_drawline_ctrl = data; break;
+	case 0x0b: m_vky_gfx_mode = data; break;   // GFX MODE ($FFCB): bit 0 HIRES4, bits 3:1 palette group
 	case 0x0d: m_vky_bg_b = data; break;
 	case 0x0e: m_vky_bg_g = data; break;
 	case 0x0f: m_vky_bg_r = data; break;
@@ -4021,7 +4039,14 @@ uint32_t wildbits_jr2_state::screen_update(screen_device &screen, bitmap_rgb32 &
 	int bm_w = 320;
 	int bm_h = clk_70 ? 200 : 240;
 
-	// Lambda to render a single 256-color Bitmap plane (0..2)
+	// GFX MODE ($FFCB, rc14): bit 0 turns every bitmap plane into HIRES4 - 640 x 240 with two 4-bit dots per
+	// byte, the high nibble on the left - and bits 3:1 pick the 16-entry palette GROUP those dots index. A plane
+	// can also ask for it by itself (control byte bit 4, its group in bits 7:5): the two enables are OR'd and the
+	// group comes from the plane when the plane asked, otherwise from $FFCB. All bits clear = rc13 behaviour.
+	bool gfx_hires4 = (m_vky_gfx_mode & 0x01) != 0;
+	int gfx_group = (m_vky_gfx_mode >> 1) & 0x07;
+
+	// Lambda to render a single Bitmap plane (0..2): 320 x 240 8bpp with every pixel doubled, or HIRES4 640 x 240 4bpp
 	auto render_bitmap_plane = [&](int p) {
 		uint16_t reg_base = 0x1000 + p * 8;
 		uint8_t bm_ctrl = m_vram_c0[reg_base + 0];
@@ -4031,12 +4056,33 @@ uint32_t wildbits_jr2_state::screen_update(screen_device &screen, bitmap_rgb32 &
 		uint8_t clut_idx = (bm_ctrl >> 1) & 0x03;
 		uint16_t clut_base = 0x1000 + clut_idx * 0x0400;
 
+		bool plane_hires4 = (bm_ctrl & 0x10) != 0;
+		bool hires4 = gfx_hires4 || plane_hires4;
+		int group = plane_hires4 ? ((bm_ctrl >> 5) & 0x07) : gfx_group;
+
 		uint32_t start_addr = ((uint32_t)m_vram_c0[reg_base + 1] << 16) |
 		                      ((uint32_t)m_vram_c0[reg_base + 2] << 8) |
 		                      m_vram_c0[reg_base + 3];
 
-		bool is_hires4 = (m_vky_gfx_mode & 0x01) || (bm_ctrl & 0x10);
-		uint8_t clut_grp = (bm_ctrl & 0x10) ? ((bm_ctrl >> 5) & 0x07) : ((m_vky_gfx_mode >> 1) & 0x07);
+bool is_hires4 = (m_vky_gfx_mode & 0x01) || (bm_ctrl & 0x10);
+	uint8_t clut_grp = (bm_ctrl & 0x10) ? ((bm_ctrl >> 5) & 0x07) : ((m_vky_gfx_mode >> 1) & 0x07);
+
+	// CLUT entry -> pen, through the gamma tables when they are enabled
+	auto pen_of = [&](int color_idx) {
+		uint16_t entry_offset = clut_base + color_idx * 4;
+		uint8_t b = m_vram_c1[entry_offset + 0];
+		uint8_t g = m_vram_c1[entry_offset + 1];
+		uint8_t r = m_vram_c1[entry_offset + 2];
+
+		if (gamma_en)
+		{
+			b = m_vram_c0[0x0000 + b];
+			g = m_vram_c0[0x0400 + g];
+			r = m_vram_c0[0x0800 + r];
+		}
+
+		return rgb_t(r, g, b);
+	};
 
 		for (int by = 0; by < bm_h; by++)
 		{
@@ -4044,110 +4090,82 @@ uint32_t wildbits_jr2_state::screen_update(screen_device &screen, bitmap_rgb32 &
 			int sy1 = by * 2 + 1;
 			if (sy0 > cliprect.max_y || sy1 < cliprect.min_y)
 				continue;
+			bool row0 = (sy0 >= cliprect.min_y && sy0 <= cliprect.max_y);
+			bool row1 = (sy1 >= cliprect.min_y && sy1 <= cliprect.max_y);
 
 			uint32_t row_addr = start_addr + by * bm_w;
-			if (row_addr + bm_w > 0x200000)
+const uint8_t *src_row = vicky_ram_ptr(row_addr);
+	if (!src_row || !vicky_ram_ptr(row_addr + bm_w - 1))
+		continue;
 				continue;
 
-			const uint8_t *src_row = &m_ram[row_addr];
+			// one screen dot on both of the doubled scanlines
+			auto plot = [&](int sx, rgb_t pen) {
+				if (sx < cliprect.min_x || sx > cliprect.max_x)
+					return;
+				if (row0)
+					bitmap.pix(sy0, sx) = pen;
+				if (row1)
+					bitmap.pix(sy1, sx) = pen;
+			};
 
 			if (is_hires4)
 			{
-				for (int bx = 0; bx < bm_w; bx++)
+uint8_t byte = src_row[bx];
+
+			if (is_hires4)
+			{
+				uint8_t hi = byte >> 4;
+				uint8_t lo = byte & 0x0f;
+				if (hi)
 				{
-					uint8_t byte = src_row[bx];
-					uint8_t nib0 = (byte >> 4) & 0x0f; // High nibble = left pixel
-					uint8_t nib1 = byte & 0x0f;        // Low nibble = right pixel
-
-					int sx0 = bx * 2;
-					int sx1 = bx * 2 + 1;
-
-					if (nib0 != 0)
+					rgb_t pen = pen_of((clut_grp << 4) | hi);
+					int sx = bx * 2;
+					if (sx >= cliprect.min_x && sx <= cliprect.max_x)
 					{
-						uint8_t color_idx = (clut_grp << 4) | nib0;
-						uint16_t entry_offset = clut_base + color_idx * 4;
-						uint8_t b = m_vram_c1[entry_offset + 0];
-						uint8_t g = m_vram_c1[entry_offset + 1];
-						uint8_t r = m_vram_c1[entry_offset + 2];
-						if (gamma_en)
-						{
-							b = m_vram_c0[0x0000 + b];
-							g = m_vram_c0[0x0400 + g];
-							r = m_vram_c0[0x0800 + r];
-						}
-						rgb_t pen(r, g, b);
-						if (sx0 >= cliprect.min_x && sx0 <= cliprect.max_x)
-						{
-							if (sy0 >= cliprect.min_y && sy0 <= cliprect.max_y)
-								bitmap.pix(sy0, sx0) = pen;
-							if (sy1 >= cliprect.min_y && sy1 <= cliprect.max_y)
-								bitmap.pix(sy1, sx0) = pen;
-						}
+						if (sy0 >= cliprect.min_y && sy0 <= cliprect.max_y)
+							bitmap.pix(sy0, sx) = pen;
+						if (sy1 >= cliprect.min_y && sy1 <= cliprect.max_y)
+							bitmap.pix(sy1, sx) = pen;
 					}
-
-					if (nib1 != 0)
+				}
+				if (lo)
+				{
+					rgb_t pen = pen_of((clut_grp << 4) | lo);
+					int sx = bx * 2 + 1;
+					if (sx >= cliprect.min_x && sx <= cliprect.max_x)
 					{
-						uint8_t color_idx = (clut_grp << 4) | nib1;
-						uint16_t entry_offset = clut_base + color_idx * 4;
-						uint8_t b = m_vram_c1[entry_offset + 0];
-						uint8_t g = m_vram_c1[entry_offset + 1];
-						uint8_t r = m_vram_c1[entry_offset + 2];
-						if (gamma_en)
-						{
-							b = m_vram_c0[0x0000 + b];
-							g = m_vram_c0[0x0400 + g];
-							r = m_vram_c0[0x0800 + r];
-						}
-						rgb_t pen(r, g, b);
-						if (sx1 >= cliprect.min_x && sx1 <= cliprect.max_x)
-						{
-							if (sy0 >= cliprect.min_y && sy0 <= cliprect.max_y)
-								bitmap.pix(sy0, sx1) = pen;
-							if (sy1 >= cliprect.min_y && sy1 <= cliprect.max_y)
-								bitmap.pix(sy1, sx1) = pen;
-						}
+						if (sy0 >= cliprect.min_y && sy0 <= cliprect.max_y)
+							bitmap.pix(sy0, sx) = pen;
+						if (sy1 >= cliprect.min_y && sy1 <= cliprect.max_y)
+							bitmap.pix(sy1, sx) = pen;
 					}
 				}
 			}
 			else
 			{
-				for (int bx = 0; bx < bm_w; bx++)
+				if (byte == 0)
+					continue; // Transparent pixel
+
+				rgb_t pen = pen_of(byte);
+				int sx0 = bx * 2;
+				int sx1 = bx * 2 + 1;
+
+				if (sy0 >= cliprect.min_y && sy0 <= cliprect.max_y)
 				{
-					uint8_t color_idx = src_row[bx];
-					if (color_idx == 0)
-						continue; // Transparent pixel
-
-					uint16_t entry_offset = clut_base + color_idx * 4;
-					uint8_t b = m_vram_c1[entry_offset + 0];
-					uint8_t g = m_vram_c1[entry_offset + 1];
-					uint8_t r = m_vram_c1[entry_offset + 2];
-
-					if (gamma_en)
-					{
-						b = m_vram_c0[0x0000 + b];
-						g = m_vram_c0[0x0400 + g];
-						r = m_vram_c0[0x0800 + r];
-					}
-
-					rgb_t pen(r, g, b);
-
-					int sx0 = bx * 2;
-					int sx1 = bx * 2 + 1;
-
-					if (sy0 >= cliprect.min_y && sy0 <= cliprect.max_y)
-					{
-						if (sx0 >= cliprect.min_x && sx0 <= cliprect.max_x)
-							bitmap.pix(sy0, sx0) = pen;
-						if (sx1 >= cliprect.min_x && sx1 <= cliprect.max_x)
-							bitmap.pix(sy0, sx1) = pen;
-					}
-					if (sy1 >= cliprect.min_y && sy1 <= cliprect.max_y)
-					{
-						if (sx0 >= cliprect.min_x && sx0 <= cliprect.max_x)
-							bitmap.pix(sy1, sx0) = pen;
-						if (sx1 >= cliprect.min_x && sx1 <= cliprect.max_x)
-							bitmap.pix(sy1, sx1) = pen;
-					}
+					if (sx0 >= cliprect.min_x && sx0 <= cliprect.max_x)
+						bitmap.pix(sy0, sx0) = pen;
+					if (sx1 >= cliprect.min_x && sx1 <= cliprect.max_x)
+						bitmap.pix(sy0, sx1) = pen;
+				}
+				if (sy1 >= cliprect.min_y && sy1 <= cliprect.max_y)
+				{
+					if (sx0 >= cliprect.min_x && sx0 <= cliprect.max_x)
+						bitmap.pix(sy1, sx0) = pen;
+					if (sx1 >= cliprect.min_x && sx1 <= cliprect.max_x)
+						bitmap.pix(sy1, sx1) = pen;
+				}
+			}
 				}
 			}
 		}
@@ -4209,10 +4227,10 @@ uint32_t wildbits_jr2_state::screen_update(screen_device &screen, bitmap_rgb32 &
 					continue;
 
 				uint32_t row_addr = start_addr + sy * spr_w;
-				if (row_addr + spr_w > 0x200000)
+const uint8_t *src_row = vicky_ram_ptr(row_addr);
+	if (!src_row || !vicky_ram_ptr(row_addr + spr_w - 1))
+		continue;
 					continue;
-
-				const uint8_t *src_row = &m_ram[row_addr];
 
 				for (int sx = 0; sx < spr_w; sx++)
 				{
@@ -4324,11 +4342,13 @@ uint32_t wildbits_jr2_state::screen_update(screen_device &screen, bitmap_rgb32 &
 				int fine_x_orig = virt_x % tile_size;
 
 				uint32_t cell_addr = start_addr + ((uint32_t)tile_y * map_w + tile_x) * 2;
-				if (cell_addr + 1 >= 0x200000)
+const uint8_t *cell = vicky_ram_ptr(cell_addr);
+	if (!cell || !vicky_ram_ptr(cell_addr + 1))
+		continue;
 					continue;
 
-				uint8_t tile_idx = m_ram[cell_addr + 0];
-				uint8_t tile_attr = m_ram[cell_addr + 1];
+				uint8_t tile_idx = cell[0];
+				uint8_t tile_attr = cell[1];
 
 				// In TinyVicky II, tile index 0 in the cell matrix denotes an empty/transparent cell
 				if (tile_idx == 0)
@@ -4375,10 +4395,12 @@ uint32_t wildbits_jr2_state::screen_update(screen_device &screen, bitmap_rgb32 &
 					pix_addr = ts_addr + ((uint32_t)tile_idx * tile_size + fine_y) * tile_size + fine_x;
 				}
 
-				if (pix_addr >= 0x200000)
+const uint8_t *pixel = vicky_ram_ptr(pix_addr);
+	if (!pixel)
+		continue;
 					continue;
 
-				uint8_t color_idx = m_ram[pix_addr];
+				uint8_t color_idx = *pixel;
 				if (color_idx == 0)
 					continue; // Color index 0 is transparent
 
@@ -4668,7 +4690,7 @@ uint32_t wildbits_jr2_state::screen_update(screen_device &screen, bitmap_rgb32 &
 
 void wildbits_jr2_state::machine_start()
 {
-	m_ram = std::make_unique<uint8_t[]>(0x200000);   // 2MB Physical SRAM (1,792 KB decoded)
+m_ram = std::make_unique<uint8_t[]>(0x200000);   // 2MB Physical SRAM (1,792 KB decoded)
 	std::fill_n(m_ram.get(), 0x200000, 0x00);
 	m_cart = std::make_unique<uint8_t[]>(0x40000);       // 256KB Cartridge port decode ($80 - $9F)
 	std::fill_n(m_cart.get(), 0x40000, 0xff);
@@ -4685,7 +4707,7 @@ void wildbits_jr2_state::machine_start()
 	m_vs_midi_timer = timer_alloc(FUNC(wildbits_jr2_state::vs_midi_tick), this);
 	m_stream = stream_alloc(0, 2, 44100);
 
-	// Probe host MIDI output ports and initialize default port if available
+// Probe host MIDI output ports and initialize default port if available
 	bool has_midi_out = false;
 	for (const auto &port : machine().osd().list_midi_ports())
 	{
@@ -4728,6 +4750,7 @@ void wildbits_jr2_state::machine_start()
 	save_item(NAME(m_t1_ctr));
 	save_item(NAME(m_t1_stat));
 	save_item(NAME(m_t1_val));
+	save_item(NAME(m_t1_load));
 	save_item(NAME(m_t1_cmp));
 	save_item(NAME(m_t1_cmp_ctr));
 	save_item(NAME(m_ps2_ctrl));
@@ -4738,6 +4761,7 @@ void wildbits_jr2_state::machine_start()
 	save_item(NAME(m_sdcard_miso));
 	save_item(NAME(m_vky_mstr_ctrl_0));
 	save_item(NAME(m_vky_mstr_ctrl_1));
+	save_item(NAME(m_vky_gfx_mode));
 	save_item(NAME(m_vky_layer_ctrl_0));
 	save_item(NAME(m_vky_layer_ctrl_1));
 	save_item(NAME(m_vky_brdr_ctrl));
@@ -5037,6 +5061,7 @@ void wildbits_jr2_state::machine_reset()
 	m_t1_ctr = 0;
 	m_t1_stat = 0;
 	m_t1_val = 0;
+	m_t1_load = 0;
 	m_t1_cmp = 0;
 	m_t1_cmp_ctr = 0;
 	m_timer1->adjust(attotime::never);
@@ -5092,6 +5117,7 @@ void wildbits_jr2_state::machine_reset()
 	m_vky_crsr_color = 0x7a;
 	m_vky_crsr_x = 0;
 	m_vky_crsr_y = 0;
+	m_vky_gfx_mode = 0x00;    // 320-wide 8bpp bitmaps until software pokes $FFCB
 
 	memset(m_constant_ram, 0, sizeof(m_constant_ram));
 	memset(m_vector_ram, 0, sizeof(m_vector_ram));
@@ -5190,6 +5216,11 @@ void wildbits_jr2_state::device_stop()
 		m_mmu_mem_ctrl);
 
 	uint8_t active_lut = m_mmu_mem_ctrl & 0x03;
+	printf("VICKY MSTR: [%02X, %02X], GFX MODE ($FFCB): $%02X, BM ctrl@addr: ", m_vky_mstr_ctrl_0, m_vky_mstr_ctrl_1, m_vky_gfx_mode);
+	for (int p = 0; p < 3; p++)
+		printf("[%02X @%02X%02X%02X]%s", m_vram_c0[0x1000 + p * 8], m_vram_c0[0x1001 + p * 8], m_vram_c0[0x1002 + p * 8], m_vram_c0[0x1003 + p * 8], (p < 2) ? " " : "");
+	puts("");
+
 	printf("Active LUT %d Blocks: [", active_lut);
 	for (int s = 0; s < 8; s++)
 		printf("%02X%s", m_mlut[active_lut][s], (s < 7) ? ", " : "]\n");
@@ -5409,6 +5440,22 @@ void wildbits_jr2_state::vblank_w(int state)
 		poll_keyboard();
 		poll_mouse();
 		set_irq(0, 0x01); // INT_VKY_SOF (Start of Frame / VSYNC 60Hz tick)
+		// TIMER1 is the start-of-frame counter (TimerInterfaceJr.v): clear while control bit 1 is set, load on
+		// bit 2, else one step up (bit 3) or down per frame while bit 0 is set; a compare match sets the
+		// status flag and INT_TIMER_1, and clears/reloads the count when the compare control asks for it.
+		if (m_t1_ctr & 0x02)
+			m_t1_val = 0;
+		else if (m_t1_ctr & 0x04)
+			m_t1_val = m_t1_load;
+		else if (m_t1_ctr & 0x01)
+			m_t1_val = (m_t1_val + ((m_t1_ctr & 0x08) ? 1 : 0xffffff)) & 0xffffff;
+		if ((m_t1_ctr & 0x01) && m_t1_val == (m_t1_cmp & 0xffffff))
+		{
+			m_t1_stat |= 0x01;
+			set_irq(0, 0x20);  // INT_TIMER_1
+			if (m_t1_cmp_ctr & 0x01) m_t1_val = 0;
+			else if (m_t1_cmp_ctr & 0x02) m_t1_val = m_t1_load;
+		}
 	}
 }
 
