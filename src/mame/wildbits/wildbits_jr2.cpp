@@ -483,7 +483,8 @@ uint8_t *wildbits_jr2_state::get_physical_block_ptr(uint8_t block_num)
 	// Blocks 0x80 - 0x9F (0x100000 - 0x13FFFF): 256KB Cartridge Port (/c0, /c1)
 	// Blocks 0xA0 - 0xBF (0x140000 - 0x17FFFF): first 256KB of the SRAM extension
 	// Blocks 0xC0 - 0xC4: Dedicated Video and Audio Block buffers
-	// Blocks 0xD0 - 0xEF (VICKY 0x200000 - 0x23FFFF): second 256KB of the SRAM extension
+	// Blocks 0xD0 - 0xEF (VICKY 0x1A0000 - 0x1DFFFF, block x 0x2000 like every block since core rc15;
+	//                     rc14 had put them at 0x200000 behind a fold): second 256KB of the SRAM extension
 	if (block_num < 0x40)
 	{
 		return &m_ram[(block_num & 0x3f) * 0x2000];
@@ -537,8 +538,8 @@ uint8_t *wildbits_jr2_state::vicky_ram_ptr(uint32_t address)
 		return &m_ram[address];
 	if (address >= 0x140000 && address < 0x180000)
 		return &m_ram[0x80000 + address - 0x140000];
-	if (address >= 0x200000 && address < 0x240000)
-		return &m_ram[0xc0000 + address - 0x200000];
+	if (address >= 0x1a0000 && address < 0x1e0000)   // rc15: window B at its identity address (rc14: 0x200000)
+		return &m_ram[0xc0000 + address - 0x1a0000];
 	return nullptr;
 }
 
