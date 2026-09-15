@@ -305,7 +305,7 @@ private:
 	memory_bank_array_creator<8> m_bank;
 
 	// Memory structures
-	std::unique_ptr<uint8_t[]> m_ram;        // 1MB SRAM
+	std::unique_ptr<uint8_t[]> m_ram;        // 2MB physical SRAM
 	std::unique_ptr<uint8_t[]> m_cart;       // 256KB Cartridge port decode ($80 - $9F)
 	std::unique_ptr<uint8_t[]> m_unmapped;   // 8KB dummy unmapped page
 	std::unique_ptr<uint8_t[]> m_vram_c0;     // Block $C0: VICKY control & gamma
@@ -458,8 +458,6 @@ private:
 	uint16_t m_vky_crsr_y;
 	uint16_t m_vky_line_cmp;
 	uint8_t m_vky_lint_ctrl;
-        uint16_t m_vky_line_cmp;
-        uint8_t m_vky_lint_ctrl;
         uint8_t m_vky_gfx_mode;     // GFX MODE $FFCB (rc14): bit 0 = HIRES4 for every bitmap plane, bits 3:1 = palette GROUP
 	emu_timer *m_scanline_timer;
 
@@ -482,15 +480,16 @@ constexpr uint8_t WBJR2_MACHINE_ID = 0x1a;
 uint8_t *wildbits_jr2_state::get_physical_block_ptr(uint8_t block_num)
 {
 	// Blocks 0x00 - 0x3F (0x000000 - 0x07FFFF): 512KB SRAM
+	// FLASHDIS ($FFA1 bit 2): blocks $40-$9F select SRAM; reset 0 retains flash/cartridge.
 	// Blocks 0x40 - 0x7F (0x080000 - 0x0FFFFF): 512KB Flash ROM
 	// Blocks 0x80 - 0x9F (0x100000 - 0x13FFFF): 256KB Cartridge Port (/c0, /c1)
 	// Blocks 0xA0 - 0xBF (0x140000 - 0x17FFFF): first 256KB of the SRAM extension
 	// Blocks 0xC0 - 0xC4: Dedicated Video and Audio Block buffers
 	// Blocks 0xD0 - 0xEF (VICKY 0x1A0000 - 0x1DFFFF, block x 0x2000 like every block since core rc15;
 	//                     rc14 had put them at 0x200000 behind a fold): second 256KB of the SRAM extension
-	if (block_num < 0x40)
+	if (block_num < 0x40 || ((m_mmu_io_ctrl & 0x04) && block_num < 0xa0))
 	{
-		return &m_ram[(block_num & 0x3f) * 0x2000];
+		return &m_ram[block_num * 0x2000];
 	}
 	else if (block_num < 0x80)
 	{
@@ -502,7 +501,7 @@ uint8_t *wildbits_jr2_state::get_physical_block_ptr(uint8_t block_num)
 	}
 	else if (block_num >= 0xa0 && block_num < 0xc0)
 	{
-		return &m_ram[0x80000 + (block_num - 0xa0) * 0x2000];
+		return &m_ram[block_num * 0x2000];
 	}
 	else if (block_num == 0xc0)
 	{
@@ -526,7 +525,7 @@ uint8_t *wildbits_jr2_state::get_physical_block_ptr(uint8_t block_num)
 	}
 	else if (block_num >= 0xd0 && block_num < 0xf0)
 	{
-		return &m_ram[0xc0000 + (block_num - 0xd0) * 0x2000];
+		return &m_ram[block_num * 0x2000];
 	}
 	else
 	{
@@ -536,13 +535,9 @@ uint8_t *wildbits_jr2_state::get_physical_block_ptr(uint8_t block_num)
 
 uint8_t *wildbits_jr2_state::vicky_ram_ptr(uint32_t address)
 {
-	// Revision E bus-visible aliases into the single 1MB SRAM backing store.
-	if (address < 0x080000)
+	// Physical SRAM addresses are block * 0x2000, also for video and DMA.
+	if (address < 0x180000 || (address >= 0x1a0000 && address < 0x1e0000))
 		return &m_ram[address];
-	if (address >= 0x140000 && address < 0x180000)
-		return &m_ram[0x80000 + address - 0x140000];
-	if (address >= 0x1a0000 && address < 0x1e0000)   // rc15: window B at its identity address (rc14: 0x200000)
-		return &m_ram[0xc0000 + address - 0x1a0000];
 	return nullptr;
 }
 
@@ -589,13 +584,14 @@ void wildbits_jr2_state::mmu_mem_ctrl_w(uint8_t data)
 uint8_t wildbits_jr2_state::mmu_io_ctrl_r()
 {
 	io_wait();
-	return m_mmu_io_ctrl;
+	return m_mmu_io_ctrl | 0x80; // rc16: FLASHDIS implemented (read-only)
 }
 
 void wildbits_jr2_state::mmu_io_ctrl_w(uint8_t data)
 {
 	io_wait();
-	m_mmu_io_ctrl = data;
+	m_mmu_io_ctrl = data & 0x7f;
+	update_banks(); // FLASHDIS switches already-mapped flash/cartridge slots immediately
 }
 
 uint8_t wildbits_jr2_state::mmu_slot_r(offs_t offset)
@@ -3068,7 +3064,7 @@ uint32_t wildbits_jr2_state::screen_update(screen_device &screen, bitmap_rgb32 &
 
 void wildbits_jr2_state::machine_start()
 {
-	m_ram = std::make_unique<uint8_t[]>(0x100000);    // 1MB SRAM
+	m_ram = std::make_unique<uint8_t[]>(0x200000);    // 2MB physical SRAM
 	m_cart = std::make_unique<uint8_t[]>(0x40000);       // 256KB Cartridge port decode ($80 - $9F)
 	std::fill_n(m_cart.get(), 0x40000, 0xff);
 	m_unmapped = std::make_unique<uint8_t[]>(0x2000);   // 8KB dummy unmapped page
@@ -3082,7 +3078,7 @@ void wildbits_jr2_state::machine_start()
 	m_timer0 = timer_alloc(FUNC(wildbits_jr2_state::timer0_tick), this);
 	m_timer1 = timer_alloc(FUNC(wildbits_jr2_state::timer1_tick), this);
 
-	save_pointer(NAME(m_ram), 0x100000);
+	save_pointer(NAME(m_ram), 0x200000);
 	save_pointer(NAME(m_cart), 0x40000);
 	save_pointer(NAME(m_vram_c0), 0x2000);
 	save_pointer(NAME(m_vram_c1), 0x2000);
