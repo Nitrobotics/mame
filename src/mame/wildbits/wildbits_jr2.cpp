@@ -559,6 +559,7 @@ std::unique_ptr<uint8_t[]> m_ram;        // 2MB Physical SRAM (1,792 KB decoded)
 	uint16_t m_vky_line_cmp;
 uint8_t m_vky_gfx_mode;     // GFX MODE $FFCB (rc14): bit 0 = HIRES4 for every bitmap plane, bits 3:1 = palette GROUP
 	uint8_t m_vky_lint_ctrl;
+	uint8_t m_vky_gfx_mode;     // GFX MODE $FFCB (rc14): bit 0 = HIRES4 for every bitmap plane, bits 3:1 = palette GROUP
 	emu_timer *m_scanline_timer;
 
 	// TinyVicky Hardware Line-Draw Accelerator ($1080 - $1087 in Page $C0, $FFCA)
@@ -599,7 +600,7 @@ uint8_t *wildbits_jr2_state::get_physical_block_ptr(uint8_t block_num)
 	// Blocks 0xC5 - 0xCF: Unmapped (88KB)
 	// Blocks 0xD0 - 0xEF (0x1A0000 - 0x1DFFFF): Window B Expansion SRAM (256KB) / second 256KB of the SRAM extension (VICKY mapping, 0x2000 per block)
 	// Blocks 0xF0 - 0xFF: Unmapped (128KB)
-	if (block_num < 0x40)
+	if (block_num < 0x40 || ((m_mmu_io_ctrl & 0x04) && block_num < 0xa0))
 	{
 		return &m_ram[block_num * 0x2000];
 	}
@@ -623,7 +624,7 @@ uint8_t *wildbits_jr2_state::get_physical_block_ptr(uint8_t block_num)
 	}
 	else if (block_num >= 0xa0 && block_num < 0xc0)
 	{
-		return &m_ram[0x80000 + (block_num - 0xa0) * 0x2000];
+		return &m_ram[block_num * 0x2000];
 	}
 	else if (block_num == 0xc0)
 	{
@@ -647,7 +648,7 @@ uint8_t *wildbits_jr2_state::get_physical_block_ptr(uint8_t block_num)
 	}
 	else if (block_num >= 0xd0 && block_num < 0xf0)
 	{
-return &m_ram[block_num * 0x2000];
+		return &m_ram[block_num * 0x2000];
 	}
 	else
 	{
@@ -657,13 +658,9 @@ return &m_ram[block_num * 0x2000];
 
 uint8_t *wildbits_jr2_state::vicky_ram_ptr(uint32_t address)
 {
-	// Revision E bus-visible aliases into the single 1MB SRAM backing store.
-	if (address < 0x080000)
+	// Physical SRAM addresses are block * 0x2000, also for video and DMA.
+	if (address < 0x180000 || (address >= 0x1a0000 && address < 0x1e0000))
 		return &m_ram[address];
-	if (address >= 0x140000 && address < 0x180000)
-		return &m_ram[0x80000 + address - 0x140000];
-	if (address >= 0x1a0000 && address < 0x1e0000)   // rc15: window B at its identity address (rc14: 0x200000)
-		return &m_ram[0xc0000 + address - 0x1a0000];
 	return nullptr;
 }
 
@@ -719,18 +716,14 @@ void wildbits_jr2_state::mmu_mem_ctrl_w(uint8_t data)
 uint8_t wildbits_jr2_state::mmu_io_ctrl_r()
 {
 	io_wait();
-	return (m_mmu_io_ctrl & 0x7f) | 0x80;
+	return (m_mmu_io_ctrl & 0x7f) | 0x80; // rc16: FLASHDIS implemented (read-only)
 }
 
 void wildbits_jr2_state::mmu_io_ctrl_w(uint8_t data)
 {
 	io_wait();
-	uint8_t old = m_mmu_io_ctrl;
-	m_mmu_io_ctrl = data;
-	if ((old ^ data) & 0x04)
-	{
-		update_banks();
-	}
+	m_mmu_io_ctrl = data & 0x7f;
+	update_banks(); // FLASHDIS switches already-mapped flash/cartridge slots immediately
 }
 
 uint8_t wildbits_jr2_state::mmu_slot_r(offs_t offset)
@@ -4690,7 +4683,7 @@ const uint8_t *pixel = vicky_ram_ptr(pix_addr);
 
 void wildbits_jr2_state::machine_start()
 {
-m_ram = std::make_unique<uint8_t[]>(0x200000);   // 2MB Physical SRAM (1,792 KB decoded)
+	m_ram = std::make_unique<uint8_t[]>(0x200000);   // 2MB Physical SRAM (1,792 KB decoded)
 	std::fill_n(m_ram.get(), 0x200000, 0x00);
 	m_cart = std::make_unique<uint8_t[]>(0x40000);       // 256KB Cartridge port decode ($80 - $9F)
 	std::fill_n(m_cart.get(), 0x40000, 0xff);
@@ -4721,7 +4714,6 @@ m_ram = std::make_unique<uint8_t[]>(0x200000);   // 2MB Physical SRAM (1,792 KB 
 	{
 		m_midi_out = machine().osd().create_midi_output("default");
 	}
-
 	save_pointer(NAME(m_ram), 0x200000);
 	save_pointer(NAME(m_cart), 0x40000);
 	save_pointer(NAME(m_vram_c0), 0x2000);
