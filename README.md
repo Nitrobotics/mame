@@ -69,16 +69,15 @@
 >
 > **Keyboard Input in MAME:** To toggle between MAME UI controls and direct keyboard input for the terminal/shell, press <kbd>Fn</kbd> + <kbd>Delete</kbd> (on Mac) or <kbd>Forward Delete</kbd> / <kbd>Scroll Lock</kbd> (on PC) until MAME displays *UI controls disabled*.
 >
-> **Playing MIDI Files (General MIDI with FluidSynth):**
-> 1. Download `FluidR3_GM.sf2` from https://musical-artifacts.com/artifacts/738 and place the file in `~/Library/Audio/Sounds/Banks/FluidR3_GM.sf2`:
+> **Playing MIDI Files (Roland SC-55 / General MIDI with FluidSynth):**
+> 1. Download `Roland.SC-55.sf2` from https://github.com/nitro-shoe/sc-55-soundfont/releases/download/v1.34/Roland.SC-55.sf2 and place the file in `~/Library/Audio/Sounds/Banks/Roland.SC-55.sf2`:
 >    ```bash
 >    mkdir -p ~/Library/Audio/Sounds/Banks
->    # Place the downloaded file at:
->    # ~/Library/Audio/Sounds/Banks/FluidR3_GM.sf2
+>    curl -L -o ~/Library/Audio/Sounds/Banks/Roland.SC-55.sf2 https://github.com/nitro-shoe/sc-55-soundfont/releases/download/v1.34/Roland.SC-55.sf2
 >    ```
 > 2. In one terminal, start FluidSynth:
 >    ```bash
->    fluidsynth -a coreaudio -m coremidi -s ~/Library/Audio/Sounds/Banks/FluidR3_GM.sf2
+>    fluidsynth -a coreaudio -m coremidi -s ~/Library/Audio/Sounds/Banks/Roland.SC-55.sf2
 >    ```
 > 3. In another terminal, run MAME (e.g. booting NitrOS-9 Level 2):
 >    ```bash
