@@ -435,6 +435,8 @@ private:
 	uint8_t m_codec_lo;
 	uint8_t m_codec_hi;
 	uint8_t m_codec_regs[32];
+	float m_codec_vs_gain_l;
+	float m_codec_vs_gain_r;
 	void reset_codec();
 	void update_codec();
 
@@ -892,7 +894,9 @@ void wildbits_jr2_state::reset_codec()
 	m_codec_regs[13] = 0x00; // All power on
 	m_codec_regs[17] = 0x01; // ALC Control 2
 	m_codec_regs[21] = 0x03; // ADC Mux
-	m_codec_regs[22] = 0x07; // Output Mux
+	m_codec_regs[22] = 0x07; // Output Mux: Bypass + Aux + DAC
+	m_codec_vs_gain_l = 1.0f;
+	m_codec_vs_gain_r = 1.0f;
 	update_codec();
 }
 
@@ -902,6 +906,7 @@ void wildbits_jr2_state::update_codec()
 	// R00/R01: Headphone attenuation ($79 = 0 dB, 1 dB/step down to $30 = -73 dB, <$30 = mute)
 	// R03/R04: DAC attenuation ($FF = 0 dB, 0.5 dB/step down to $01 = -127 dB, $00 = mute)
 	// R13: Power-down & mute (bit 0 = chip PD, bit 2 = DAC PD, bit 3 = HP PD)
+	// R22: Output Mux (bit 0 = DAC enable, bit 2 = Bypass/AIN enable)
 
 	auto get_hp_gain = [](uint8_t code) -> float {
 		if (code < 0x30)
@@ -922,28 +927,42 @@ void wildbits_jr2_state::update_codec()
 	bool dac_pd  = (r13 & 0x04) != 0;
 	bool hp_pd   = (r13 & 0x08) != 0;
 
-	float gain_l = 0.0f;
-	float gain_r = 0.0f;
+	bool dac_en    = (m_codec_regs[22] & 0x01) != 0;
+	bool bypass_en = (m_codec_regs[22] & 0x04) != 0;
 
-	if (!chip_pd)
+	float dac_gain_l = 0.0f;
+	float dac_gain_r = 0.0f;
+	m_codec_vs_gain_l = 0.0f;
+	m_codec_vs_gain_r = 0.0f;
+
+	if (!chip_pd && !hp_pd)
 	{
-		float hp_l = hp_pd ? 0.0f : get_hp_gain(m_codec_regs[0]);
-		float hp_r = hp_pd ? 0.0f : get_hp_gain(m_codec_regs[1]);
-		float dac_l = dac_pd ? 0.0f : get_dac_gain(m_codec_regs[3]);
-		float dac_r = dac_pd ? 0.0f : get_dac_gain(m_codec_regs[4]);
+		float hp_l = get_hp_gain(m_codec_regs[0]);
+		float hp_r = get_hp_gain(m_codec_regs[1]);
 
-		gain_l = hp_l * dac_l;
-		gain_r = hp_r * dac_r;
+		if (bypass_en)
+		{
+			m_codec_vs_gain_l = hp_l;
+			m_codec_vs_gain_r = hp_r;
+		}
+
+		if (!dac_pd && dac_en)
+		{
+			float dac_l = get_dac_gain(m_codec_regs[3]);
+			float dac_r = get_dac_gain(m_codec_regs[4]);
+			dac_gain_l = hp_l * dac_l;
+			dac_gain_r = hp_r * dac_r;
+		}
 	}
 
-	m_opl3->set_output_gain(0, gain_l);
-	m_opl3->set_output_gain(1, gain_r);
-	m_opl3->set_output_gain(2, gain_l);
-	m_opl3->set_output_gain(3, gain_r);
-	m_psg_l->set_output_gain(ALL_OUTPUTS, gain_l);
-	m_psg_r->set_output_gain(ALL_OUTPUTS, gain_r);
-	m_sid_l->set_output_gain(ALL_OUTPUTS, gain_l);
-	m_sid_r->set_output_gain(ALL_OUTPUTS, gain_r);
+	m_opl3->set_output_gain(0, dac_gain_l);
+	m_opl3->set_output_gain(1, dac_gain_r);
+	m_opl3->set_output_gain(2, dac_gain_l);
+	m_opl3->set_output_gain(3, dac_gain_r);
+	m_psg_l->set_output_gain(ALL_OUTPUTS, dac_gain_l);
+	m_psg_r->set_output_gain(ALL_OUTPUTS, dac_gain_r);
+	m_sid_l->set_output_gain(ALL_OUTPUTS, dac_gain_l);
+	m_sid_r->set_output_gain(ALL_OUTPUTS, dac_gain_r);
 }
 
 // Audio CODEC ($FE70 - $FE72: WM8776)
@@ -3630,8 +3649,8 @@ void wildbits_jr2_state::sound_stream_update(sound_stream &stream)
 
 		uint8_t atten_l = (m_vs_sci[11] >> 8) & 0xff;
 		uint8_t atten_r = m_vs_sci[11] & 0xff;
-		double vol_l = (atten_l >= 254) ? 0.0 : std::pow(10.0, -0.025 * atten_l);
-		double vol_r = (atten_r >= 254) ? 0.0 : std::pow(10.0, -0.025 * atten_r);
+		double vol_l = (atten_l >= 254) ? 0.0 : (std::pow(10.0, -0.025 * atten_l) * m_codec_vs_gain_l);
+		double vol_r = (atten_r >= 254) ? 0.0 : (std::pow(10.0, -0.025 * atten_r) * m_codec_vs_gain_r);
 
 		for (int s = 0; s < stream.samples(); s++)
 		{
@@ -4742,6 +4761,8 @@ void wildbits_jr2_state::machine_start()
 	save_item(NAME(m_codec_lo));
 	save_item(NAME(m_codec_hi));
 	save_item(NAME(m_codec_regs));
+	save_item(NAME(m_codec_vs_gain_l));
+	save_item(NAME(m_codec_vs_gain_r));
 	save_item(NAME(m_sam2695_ctrl));
 	save_item(NAME(m_vs_ctrl));
 	save_item(NAME(m_vs_scireg));
